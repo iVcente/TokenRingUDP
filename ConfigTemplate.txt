@@ -1,0 +1,4 @@
+<ip_destino_do_token>:<porta>
+<apelido_da_maquina_atual>
+<tempo_token>
+<token>

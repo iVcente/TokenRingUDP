@@ -1,0 +1,7 @@
+<controle de erro>:<apelido de origem>:<apelido do destino>:<CRC>:<mensagem ou dados do arquivo>
+
+// Packet format
+        // 1111 -> Token
+        // 2222 -> Message
+            // <controle de erro>:<apelido de origem>:<apelido do destino>:<CRC>:<mensagem ou dados do arquivo>
+            // 2222;maquinanaoexiste:Joao:Maria:19385749:Oi pessoal!
