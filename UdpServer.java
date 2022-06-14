@@ -4,11 +4,9 @@ import java.net.*;
 import java.io.*;
 
 public class UdpServer implements Runnable {
-    // private int timeout = 8000; // Timeout to close server socket in milliseconds
-    private static int listeningPort; // UDP port on which the server will be listening
+    // private final int timeout = 8000; // Timeout to close server socket in milliseconds
     private int bufferSize; // Server's bytes buffer size
     private byte[] buffer;
-    private String tokenId;
     // Message fields
     private String recPacketId;
     private String recPacketErrorControl;
@@ -18,6 +16,7 @@ public class UdpServer implements Runnable {
     private String recPacketMessage;
     // Config file
     private String hostAlias;
+    private static int listeningPort; // UDP port on which the server will be listening
 
     /* * * * * * * * * *
      * Public methods * 
@@ -27,12 +26,12 @@ public class UdpServer implements Runnable {
         this.hostAlias = hostAlias;
         this.bufferSize = bufferSize;
         listeningPort = serverPort;
-        this.tokenId = tokenId;
         buffer = new byte[bufferSize];
     }
 
     @Override
     public void run() {
+        System.out.println("|===== Listening on port " + listeningPort + "... =====|\n");
         try {
             DatagramSocket serverSocket = new DatagramSocket(listeningPort);
             // serverSocket.setSoTimeout(timeout); // Timeout to close server socket
@@ -43,20 +42,24 @@ public class UdpServer implements Runnable {
                 serverSocket.receive(receivedPacket);
                 if (receivedPacket.getAddress() != null) {
                     // Client has sent a packet to server
+                    Thread.sleep(50);
                     inspectPacket(receivedPacket);
                 }
             }
             serverSocket.close(); // Make sure it's closed
         }
-        catch (SocketTimeoutException e) {
-            System.out.println("\n----------------------------");
-            System.out.println("| Server socket timed out! |");
-            System.out.println("----------------------------");
+        catch(SocketTimeoutException e) {
+            System.out.println("\n****************************");
+            System.out.println("* Server socket timed out! *");
+            System.out.println("****************************");
         }
         catch(UnknownHostException e) {
             e.printStackTrace();
         }
         catch(IOException e) {
+            e.printStackTrace();
+        } 
+        catch(InterruptedException e) {
             e.printStackTrace();
         }
     }
@@ -74,10 +77,16 @@ public class UdpServer implements Runnable {
         );
         String message = fromClient.readLine();
         readMessage(message);
-
+        
         // Packet contains token
         if (Helpers.isMessageToken(message)) {
-            System.out.println("* Token has been received! *");
+            if (UdpClient.getHasToken()) {
+                System.out.println("\n******************************************************");
+                System.out.println("* ERROR: There's more than one token on the network! *");
+                System.out.println("******************************************************");
+                System.exit(1);
+            }
+            System.out.println("* Token has been received! *\n");
             UdpClient.setHasToken(true);
             UdpClient.releaseSemaphore();
             return;
@@ -86,33 +95,35 @@ public class UdpServer implements Runnable {
         // Packet contains message and its origin is me
         if (Helpers.isMessageFromMe(message, hostAlias)) {
             if (recPacketErrorControl.equals("ACK")) {
-                System.out.println("* Message was received successfully by " + recPacketDestinationAlias + "!");
-                UdpClient.releaseSemaphore();
+                System.out.println("* Message was received successfully by " + recPacketDestinationAlias + "!\n");
+                UdpClient.resetPreviousMessage();
+                UdpClient.removeMessageFromQueue();
             }
             else if (recPacketErrorControl.equals("NAK")) {
-                System.out.println("Message has been received with errors by " + recPacketDestinationAlias);
-                message = getMessageWithErrorControlUpdated("NAK");
-                System.out.println("Sending message again...");
-                UdpClient.sendMessage(message, recPacketDestinationAlias);
+                System.out.println("* Message has been received with error(s) by " + recPacketDestinationAlias + "! *\n");
+            }
+            else if (recPacketDestinationAlias.equals(hostAlias)) {
+                System.out.println("* Message sent to myself! *\n");
+                UdpClient.removeMessageFromQueue();
             }
             else { // maquinanaoexiste
-                System.out.println("* Couldn't contact " + recPacketDestinationAlias + "! *");
-                UdpClient.releaseSemaphore();
+                System.out.println("* Couldn't contact " + recPacketDestinationAlias + "! *\n");
+                UdpClient.removeMessageFromQueue();
             }
+            UdpClient.releaseSemaphore();
         }
         // Packet contains message and its destination is me
         else if (Helpers.isMessageForMe(message, hostAlias)) {
             if (doesMessageHaveErrors()) {
-                System.out.println("Message received from " + recPacketOriginAlias + " with errors");
+                System.out.println("* Message received from " + recPacketOriginAlias + " with errors: *");
+                Helpers.prettyPrintMessage(recPacketMessage, true);
                 message = getMessageWithErrorControlUpdated("NAK");
-                System.out.println("Requesting message to be sent again from " + recPacketOriginAlias);
+                System.out.println("* Requesting message to be sent again from " + recPacketOriginAlias + " *\n");
                 UdpClient.sendMessage(message, recPacketOriginAlias);
             }
             else {
                 System.out.println("* New message from " + recPacketOriginAlias + "! The following message has been received: *");
-                System.out.println("-----------------------------------------------------");
-                System.out.println(recPacketMessage);
-                System.out.println("-----------------------------------------------------");
+                Helpers.prettyPrintMessage(recPacketMessage, false);
                 System.out.println("* Notifying " + recPacketOriginAlias + " that the message was received successfully... *\n");
                 message = getMessageWithErrorControlUpdated("ACK");
                 UdpClient.sendMessage(message, recPacketOriginAlias);
@@ -137,13 +148,12 @@ public class UdpServer implements Runnable {
             recPacketOriginAlias = fields[1];
             recPacketDestinationAlias = fields[2];
             recPacketCrc = fields[3];
-            recPacketMessage = fields[4];
+            recPacketMessage = fields[4].trim();
         }
     }
 
     private boolean doesMessageHaveErrors() {
-        // TODO: Check CRC
-        return !recPacketCrc.equals("1234");
+        return Helpers.getCrcValue(recPacketMessage) != Long.parseLong(recPacketCrc);
     }
 
     private String getMessageWithErrorControlUpdated(String errorControl) {

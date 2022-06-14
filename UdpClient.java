@@ -2,38 +2,42 @@
 
 import java.io.*;
 import java.net.*;
+import java.util.Deque;
 import java.util.LinkedList;
-import java.util.Queue;
+import java.util.Random;
 import java.util.Scanner;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 
 public class UdpClient implements Runnable {
+    private final String messageId = "2222";
+    private final double errorInsertionRate = 0.4;
+    private final boolean insertErrors = true;
     private static String tokenId;
-    private static boolean hasToken;
     private static String messageToSend;
+    private static String previousMessage;
     private static String destinationToSend;
     private static Semaphore semaphore;
-    private String messageId = "2222";
     private Scanner in;
     // Config file
     private static String nextHostIp;
     private static int serverPort; // UDP port on which the server on next host will be listening
     private static String hostAlias;
-    private int nMessagesToSendWhileWithToken;
-    private int nMessagesSentWhileWithToken;
+    private static boolean hasToken;
+    private static int nMessagesToSendWhileWithToken;
+    private int nMessagesSentWhileWithToken = 0;
     // Client config and data
     private static byte[] buffer;
-    private static Queue<MessageData> messageQueue;
+    private static Deque<MessageData> messageQueue;
     private static int bufferSize; // Client's bytes buffer size
     private int queueMaxSize = 10;
     
-    public UdpClient(String nextHostIp, String hostAlias, boolean hasToken, int bufferSize, int serverPort, String tokenId) {
+    public UdpClient(String nextHostIp, int serverPort, String hostAlias, int nMessagesToSendWhileWithToken, boolean hasToken, int bufferSize, String tokenId) {
         UdpClient.nextHostIp = nextHostIp;
+        UdpClient.serverPort = serverPort;
         UdpClient.hostAlias = hostAlias;
+        UdpClient.nMessagesToSendWhileWithToken = nMessagesToSendWhileWithToken;
         UdpClient.hasToken = hasToken;
         UdpClient.bufferSize = bufferSize;
-        UdpClient.serverPort = serverPort;
         UdpClient.tokenId = tokenId;
         messageQueue = new LinkedList<MessageData>();
         buffer = new byte[bufferSize];
@@ -45,8 +49,16 @@ public class UdpClient implements Runnable {
      * Public methods * 
      * * * * * * * * * */
 
+    public static void removeMessageFromQueue() {
+        messageQueue.pop();
+    }
+
     public static void setHasToken(boolean isToken) {
         hasToken = isToken;
+    }
+
+    public static boolean getHasToken() {
+        return hasToken;
     }
 
     public static void releaseSemaphore() {
@@ -62,29 +74,40 @@ public class UdpClient implements Runnable {
     @Override
     public void run() {
         while (true) {
-            getUserInput();
-
-            if (hasToken) {
-                if (hasMessageToSend()) {
-                    MessageData message = getMessageOnQueue();
-                    messageToSend = formatMessage(message);
-                    destinationToSend = message.destinationAlias;
-                    sendPacket();
-                }
-                else {
-                    messageToSend = tokenId;
-                    setHasToken(false);
-                    sendPacket();
-                }
-            }
-
             try {
+                Thread.sleep(20);
+                getUserInput();
+
+                if (hasToken) {
+                    if (hasMessageToSend() && canSendMoreMessages()) {
+                        MessageData message = getMessageOnQueue();
+                        
+                        if (previousMessage != null && previousMessage.equals(message.message)) { // Make sure there's only one retransmission
+                            System.out.println("* The transmission of the last message had failed. Sending it again one last time! *\n");
+                            removeMessageFromQueue();
+                        }
+                        previousMessage = message.message;
+                        messageToSend = formatMessage(message);
+                        destinationToSend = message.destinationAlias;
+                        sendPacket();
+                        nMessagesSentWhileWithToken++;
+                    }
+                    else {
+                        messageToSend = tokenId;
+                        setHasToken(false);
+                        nMessagesSentWhileWithToken = 0;
+                        sendPacket();
+                    }
+                }
                 semaphore.acquire();
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
-            messageQueue.poll();
         }
+    }
+
+    public static void resetPreviousMessage() {
+        previousMessage = "";
     }
 
     /* * * * * * * * * *
@@ -92,16 +115,6 @@ public class UdpClient implements Runnable {
      * * * * * * * * * */
 
     private static void sendPacket() {
-        // if (!hasToken)
-        //     return;
-        
-        // if (!hasMessageToSend()) {
-        //     if (hasToken)
-        //         messageToSend = tokenId;
-        //     else
-        //         return;
-        // }
-        
         try {
             DatagramSocket clientSocket = new DatagramSocket();
             // Make sure packets can only be sent to this address.
@@ -125,18 +138,18 @@ public class UdpClient implements Runnable {
             if (Helpers.isMessageToken(messageToSend))
                 System.out.println("* Token sent to " + nextHostIp + "! *\n");
             else if (!Helpers.isMessageForMe(messageToSend, hostAlias) && !Helpers.isMessageFromMe(messageToSend, hostAlias))
-                System.out.println("* Forwarded received packet to " + nextHostIp + ":" + serverPort + "! *");
+                System.out.println("* Forwarded received packet to " + nextHostIp + ":" + serverPort + "! *\n");
             else if (errorControl.equals("maquinanaoexiste"))
-                System.out.println("* Message to " + destinationToSend + " sent through " + nextHostIp + ":" + serverPort + "! *");
+                System.out.println("* Message to " + destinationToSend + " sent through " + nextHostIp + ":" + serverPort + "! *\n");
             
             // Close resources
             bytesInputStream.close();
             clientSocket.close();
         }
         catch(PortUnreachableException e) {
-            System.err.println("\n--------------------------");
-            System.err.println("| Server not available! |");
-            System.err.println("--------------------------");
+            System.err.println("\n**************************");
+            System.err.println("* Server not available! *");
+            System.err.println("**************************");
         }
         catch(UnknownHostException e) {
             e.printStackTrace();
@@ -146,20 +159,40 @@ public class UdpClient implements Runnable {
         }
     }
 
-    private String formatMessage(MessageData messageToBeSent) {
-        // if (nMessagesToSendWhileWithToken - nMessagesSentWhileWithToken == 0) {
-        //     nMessagesSentWhileWithToken = 0;
-        //     return tokenId;
-        // }
+    private String insertErrorsInMessage(String message) {
+        Random rnd = new Random();
 
+        if (rnd.nextDouble() < errorInsertionRate) {
+            StringBuilder messageWithError = new StringBuilder(message);
+            for (int i = 0; i < messageWithError.length(); i++) {
+                if (rnd.nextDouble() < 0.5) {
+                    char c = (char)(rnd.nextInt(93) + '!');
+                    messageWithError.setCharAt(i, c);
+                }
+            }
+            return messageWithError.toString();
+        }
+
+        return message;
+    }
+
+    private boolean canSendMoreMessages() {
+        return nMessagesToSendWhileWithToken - nMessagesSentWhileWithToken != 0;
+    }
+
+    private String formatMessage(MessageData messageToBeSent) {
         String message = messageId + ";";
         message += "maquinanaoexiste" + ":";
         message += hostAlias + ":"; // Origin alias
         message += messageToBeSent.destinationAlias + ":";
-        message += "1234" + ":"; // CRC
-        message += messageToBeSent.message;
+        message += Helpers.getCrcValue(messageToBeSent.message) + ":";
 
-        // nMessagesSentWhileWithToken++;
+        if (insertErrors) {
+            String messageWithErrors = insertErrorsInMessage(messageToBeSent.message);
+            message += messageWithErrors;
+        }
+        else
+            message += messageToBeSent.message;
 
         return message;
     }
@@ -171,7 +204,7 @@ public class UdpClient implements Runnable {
     private static boolean hasMessageToSend() {
         return messageQueue.size() > 0;
     }
-    
+
     private boolean isQueueFull() {
         return messageQueue.size() >= queueMaxSize;
     }
@@ -179,27 +212,32 @@ public class UdpClient implements Runnable {
     private void getUserInput() {        
         while (true) {
             if (isQueueFull()) {
-                System.out.println("\n*** Message queue has reached its max limit! ***");
+                System.out.println("*** Message queue has reached its max limit! ***\n");
                 break;
             }
             else if (messageQueue.size() == 0)
-                System.out.println("\n> Would you like to add a message to the queue? [y/n]");
+                System.out.println("> Would you like to add a message to the queue? [y/n]");
             else
-                System.out.println("\n> Would you like to add another message to the  queue? [y/n]");
+                System.out.println("> Would you like to add another message to the queue? [y/n]");
             
             String input = in.nextLine();
             
             if (input.equals("n"))
                 break;
-            if (!input.equals("y")) {
-                System.out.println("*** Please, answer with \"y\" or \"n\". ***");
+            else if (input.equals("y"))
+                System.out.println();
+            else if (!input.equals("y")) {
+                System.out.println();
+                System.out.println("*** Please, answer with \"y\" or \"n\". ***\n");
                 continue;
             }
 
-            System.out.println("\n> Which host would you like to send your message? Type its alias.");
+            System.out.println("> Which host would you like to send your message? Type its alias.");
             String destinationAlias = in.nextLine();
-            System.out.println("\n> What would you like to say to " + destinationAlias + "?");
+            System.out.println();
+            System.out.println("> What would you like to say to " + destinationAlias + "?");
             String message = in.nextLine();
+            System.out.println();
 
             MessageData messageData = new MessageData(destinationAlias, message);
             messageQueue.add(messageData);

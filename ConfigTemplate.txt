@@ -1,4 +1,4 @@
-<ip_destino_do_token>:<porta>
-<apelido_da_maquina_atual>
-<tempo_token>
-<token>
+<next_host_ip>:<listening_port>
+<current_host_alias>
+<how_many_messages_can_be_sent_while_with_token>
+<has_token>

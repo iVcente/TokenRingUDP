@@ -15,7 +15,7 @@ class Main {
     public static void main(String[] args) throws IllegalThreadStateException {
         parseConfig(args[0]);
         
-        UdpClient client = new UdpClient(nextHostIp, hostAlias, hasToken, bufferSize, serverPort, tokenId);
+        UdpClient client = new UdpClient(nextHostIp, serverPort, hostAlias, nMessagesToSendWhileWithToken, hasToken, bufferSize, tokenId);
         UdpServer server = new UdpServer(hostAlias, bufferSize, serverPort, tokenId);
 
         Thread clientThread = new Thread(client);
